@@ -1,7 +1,6 @@
 import math
 import random
 import csv
-import os
 from collections import deque, namedtuple, defaultdict
 from dataclasses import dataclass
 
@@ -13,13 +12,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-# =========================
-# 資料夾設定
-# =========================
-DATA_DIR = "result/data"
-PIC_DIR = "result/pic"
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(PIC_DIR, exist_ok=True)
 
 # =========================
 # Config (已統一，確保公平比較)
@@ -35,7 +27,7 @@ class Config:
     episode_length: int = 200
     num_episodes: int = 100
 
-    arrival_lambda: float = 1
+    arrival_lambda: float = 
 
     # 共同參數
     gamma: float = 0.99
@@ -64,6 +56,7 @@ class Config:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     print_ue_details_every_episode: bool = False
 
+
 # =========================
 # Utility
 # =========================
@@ -77,6 +70,7 @@ def set_seed(seed: int):
 def sample_exponential_slots(lam: float) -> int:
     x = np.random.exponential(scale=1.0 / lam)
     return max(1, int(math.ceil(x)))
+
 
 # =========================
 # Replay Buffer
@@ -102,6 +96,7 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+
 # =========================
 # Q Network
 # =========================
@@ -118,6 +113,7 @@ class QNetwork(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+
 
 # =========================
 # Agents (Full DQN & Lightweight RL)
@@ -245,24 +241,20 @@ class LightweightDQNAgent:
 
         return float(loss.item())
 
+
 # =========================
-# UE & Baseline & Utils
+# UE & Baseline & Utils (保持不變)
 # =========================
 class UE:
     def __init__(self, ue_id: int, cfg: Config):
         self.id = ue_id
         self.cfg = cfg
-        # 製造不平衡流量
-        if self.id < 2:
-            self.arrival_lambda = 2.0
-        else:
-            self.arrival_lambda = 0.2
         self.reset()
 
     def reset(self):
         self.queue_len = random.randint(0, 3)
         self.hol_delay = 0
-        self.next_arrival_timer = sample_exponential_slots(self.arrival_lambda)
+        self.next_arrival_timer = sample_exponential_slots(self.cfg.arrival_lambda)
 
         self.last_access_action = 0
         self.last_channel_action = 0
@@ -285,7 +277,7 @@ class UE:
             if self.queue_len < self.cfg.max_queue_len:
                 self.queue_len += 1
             self.episode_arrivals += 1
-            self.next_arrival_timer = sample_exponential_slots(self.arrival_lambda)
+            self.next_arrival_timer = sample_exponential_slots(self.cfg.arrival_lambda)
 
     def update_delay(self):
         if self.queue_len > 0:
@@ -319,7 +311,7 @@ class UE:
 class CentralizedScheduler:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.current_ue_idx = 0
+        self.current_ue_idx = 0  # 紀錄輪詢指標
 
     def select_actions(self, env):
         num_ues = self.cfg.num_ues
@@ -328,16 +320,23 @@ class CentralizedScheduler:
         access_actions = [0] * num_ues
         channel_actions = [0] * num_ues
 
+        # 盲目分配：不管 UE Queue 裡面有沒有東西，照著順序硬發 Channel
         for ch_idx in range(num_channels):
+            # 依序挑選 UE
             ue_idx = (self.current_ue_idx + ch_idx) % num_ues
+            
+            # 強制命令該 UE 傳輸，並分配指定的 Channel
             access_actions[ue_idx] = 1
             channel_actions[ue_idx] = ch_idx
             
+        # 下一個 Slot，起點往後推 num_channels 個位置
         self.current_ue_idx = (self.current_ue_idx + num_channels) % num_ues
+        
         return access_actions, channel_actions
 
+
 # =========================
-# Environment
+# Environment (支援切換 Agent)
 # =========================
 class MACEnvironmentTwoStage:
     def __init__(self, cfg: Config, agent_type: str = "full"):
@@ -462,6 +461,7 @@ class MACEnvironmentTwoStage:
         done = self.current_slot >= self.cfg.episode_length
         return states, rewards, next_states, done, info, results, actual_channels
 
+
 # =========================
 # Logger & Metrics
 # =========================
@@ -469,15 +469,8 @@ class ExperimentLogger:
     def __init__(self, name):
         self.name = name
         self.data = []
-        # 新增累積變數來計算 Long Term Throughput
-        self.cumulative_success = 0
-        self.cumulative_slots = 0
 
-    def log(self, ep, reward, tx, success, collision, listen, avg_queue, avg_delay, episode_slots):
-        self.cumulative_success += success
-        self.cumulative_slots += episode_slots
-        long_term_throughput = self.cumulative_success / self.cumulative_slots
-
+    def log(self, ep, reward, tx, success, collision, listen, avg_queue, avg_delay):
         self.data.append({
             "episode": ep,
             "reward": reward,
@@ -488,17 +481,15 @@ class ExperimentLogger:
             "success_ratio": success / max(1, tx),
             "avg_queue": avg_queue,
             "avg_delay": avg_delay,
-            "long_term_throughput": long_term_throughput
         })
 
     def save_csv(self, filename):
-        filepath = os.path.join(DATA_DIR, filename)
         keys = self.data[0].keys()
-        with open(filepath, "w", newline="") as f:
+        with open(filename, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
             writer.writerows(self.data)
-        print(f"Saved Data: {filepath}")
+        print(f"Saved: {filename}")
 
 def collect_episode_metrics(env):
     total_queue = sum(ue.queue_len for ue in env.ues)
@@ -507,6 +498,7 @@ def collect_episode_metrics(env):
         "avg_queue": total_queue / len(env.ues),
         "avg_delay": total_delay / len(env.ues),
     }
+
 
 # =========================
 # Training Unified
@@ -564,14 +556,17 @@ def train_model(agent_type="full"):
 
         episode_rewards.append(ep_reward_sum)
 
+        # 每個 episode 跑完就記錄到 Logger
         extra = collect_episode_metrics(env)
-        logger.log(ep, ep_reward_sum, ep_tx, ep_success, ep_collision, ep_listen, extra["avg_queue"], extra["avg_delay"], cfg.episode_length)
+        logger.log(ep, ep_reward_sum, ep_tx, ep_success, ep_collision, ep_listen, extra["avg_queue"], extra["avg_delay"])
 
         if (ep + 1) % 10 == 0:
             print(f"Episode {ep+1:4d} | Reward: {np.mean(episode_rewards[-10:]):.2f} | Success: {ep_success} | Collision: {ep_collision}")
 
+    # 訓練結束後直接存檔
     logger.save_csv(f"{logger_name}.csv")
     return env
+
 
 # =========================
 # Evaluate Baseline
@@ -581,6 +576,7 @@ def run_round_robin():
     cfg = Config()
     set_seed(cfg.seed)
 
+    # 這裡借用 environment，但我們不會用到 RL Agent
     env = MACEnvironmentTwoStage(cfg, agent_type="full")
     scheduler = CentralizedScheduler(cfg)
     logger = ExperimentLogger("round_robin")
@@ -589,14 +585,17 @@ def run_round_robin():
 
     for ep in range(cfg.num_episodes):
         env.reset()
-        scheduler.current_ue_idx = 0 
+        scheduler.current_ue_idx = 0  # 每個 episode 重置輪詢指標
         done = False
         
         ep_reward_sum = 0.0
         ep_success = ep_collision = ep_listen = ep_tx = 0
 
         while not done:
+            # 由 AP 集中式決策
             access_actions, channel_actions = scheduler.select_actions(env)
+
+            # 環境前進一步
             _, rewards, _, done, info, _, _ = env.step(access_actions, channel_actions)
 
             ep_reward_sum += sum(rewards)
@@ -607,82 +606,67 @@ def run_round_robin():
 
         episode_rewards.append(ep_reward_sum)
         extra = collect_episode_metrics(env)
-        logger.log(ep, ep_reward_sum, ep_tx, ep_success, ep_collision, ep_listen, extra["avg_queue"], extra["avg_delay"], cfg.episode_length)
+        logger.log(ep, ep_reward_sum, ep_tx, ep_success, ep_collision, ep_listen, extra["avg_queue"], extra["avg_delay"])
 
         if (ep + 1) % 10 == 0:
             print(f"Episode {ep+1:4d} | Reward: {np.mean(episode_rewards[-10:]):.2f} | Success: {ep_success} | Collision: {ep_collision}")
 
     logger.save_csv("round_robin.csv")
 
+
 # =========================
 # Plotting
 # =========================
-def save_and_show_plot(filename):
-    """輔助函式：儲存圖片並顯示"""
-    filepath = os.path.join(PIC_DIR, filename)
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
-    print(f"Saved Plot: {filepath}")
-    plt.show()
-
 def plot_comparison():
     print("\n========== Generating Plots ==========")
     try:
-        full = pd.read_csv(os.path.join(DATA_DIR, "full_dqn.csv"))
-        light = pd.read_csv(os.path.join(DATA_DIR, "light_rl.csv"))
-        rr = pd.read_csv(os.path.join(DATA_DIR, "round_robin.csv"))
+        full = pd.read_csv("full_dqn.csv")
+        light = pd.read_csv("light_rl.csv")
+        rr = pd.read_csv("round_robin.csv")
     except FileNotFoundError:
-        print("CSV not found in result/data/, run training first.")
+        print("CSV not found, run training first.")
         return
 
     # 1. Success Comparison
     plt.figure(figsize=(10, 5))
     plt.plot(full["episode"], full["success"], label="Full DQN", linewidth=2, zorder=2)
     plt.plot(light["episode"], light["success"], label="Lightweight RL", linewidth=2, linestyle="--", zorder=2)
-    plt.plot(rr["episode"], rr["success"], label="Blind Round-Robin", linewidth=3, linestyle="-.", color='green', zorder=3)
+    # 把 RR 加粗，並畫在最上層 (zorder=3)
+    plt.plot(rr["episode"], rr["success"], label="Centralized Round-Robin", linewidth=3, linestyle="-.", color='green', zorder=3)
     plt.xlabel("Episode")
     plt.ylabel("Success Transmissions")
     plt.title("Success Comparison: RL vs Baseline")
     plt.legend()
     plt.grid(True)
-    save_and_show_plot("success_comparison.png")
+    plt.show()
 
     # 2. Collision Comparison
     plt.figure(figsize=(10, 5))
     plt.plot(full["episode"], full["collision"], label="Full DQN", linewidth=2, zorder=2)
     plt.plot(light["episode"], light["collision"], label="Lightweight RL", linewidth=2, linestyle="--", zorder=2)
-    plt.plot(rr["episode"], rr["collision"], label="Blind Round-Robin", linewidth=3, linestyle="-.", color='green', zorder=3)
+    plt.plot(rr["episode"], rr["collision"], label="Centralized Round-Robin", linewidth=3, linestyle="-.", color='green', zorder=3)
     plt.xlabel("Episode")
     plt.ylabel("Collisions")
     plt.title("Collision Comparison: RL vs Baseline")
+    # 強制設定 Y 軸下限，確保 0 的位置很清楚
     plt.ylim(bottom=-5) 
     plt.legend()
     plt.grid(True)
-    save_and_show_plot("collision_comparison.png")
+    plt.show()
     
     # 3. Queue Length Comparison
     plt.figure(figsize=(10, 5))
     plt.plot(full["episode"], full["avg_queue"], label="Full DQN", linewidth=2, zorder=2)
     plt.plot(light["episode"], light["avg_queue"], label="Lightweight RL", linewidth=2, linestyle="--", zorder=2)
-    plt.plot(rr["episode"], rr["avg_queue"], label="Blind Round-Robin", linewidth=3, linestyle="-.", color='green', zorder=3)
+    plt.plot(rr["episode"], rr["avg_queue"], label="Centralized Round-Robin", linewidth=3, linestyle="-.", color='green', zorder=3)
     plt.xlabel("Episode")
     plt.ylabel("Average Queue Length")
     plt.title("Queue Management: RL vs Baseline")
     plt.ylim(bottom=-0.5)
     plt.legend()
     plt.grid(True)
-    save_and_show_plot("queue_comparison.png")
+    plt.show()
 
-    # 4. Long Term Throughput Comparison
-    plt.figure(figsize=(10, 5))
-    plt.plot(full["episode"], full["long_term_throughput"], label="Full DQN", linewidth=2, zorder=2)
-    plt.plot(light["episode"], light["long_term_throughput"], label="Lightweight RL", linewidth=2, linestyle="--", zorder=2)
-    plt.plot(rr["episode"], rr["long_term_throughput"], label="Blind Round-Robin", linewidth=3, linestyle="-.", color='green', zorder=3)
-    plt.xlabel("Episode")
-    plt.ylabel("Long Term Throughput (Success/Slot)")
-    plt.title("Long Term Throughput: RL vs Baseline")
-    plt.legend(loc='lower right')
-    plt.grid(True)
-    save_and_show_plot("throughput_comparison.png")
 
 # =========================
 # Main Execution
@@ -694,8 +678,8 @@ if __name__ == "__main__":
     # 2. 訓練 Lightweight RL
     train_model(agent_type="light")
     
-    # 3. 跑 Blind Round-Robin 基準
+    # 3. 跑 Centralized Round-Robin 基準
     run_round_robin()
 
-    # 4. 畫圖表比較
+    # 4. 畫圖表比較 (三者對比)
     plot_comparison()
